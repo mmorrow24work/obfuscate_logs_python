@@ -2,37 +2,95 @@
 """
 Log file IP obfuscation tool.
 - Renames zip (strips hostname from filename)
+- Obfuscates all internal filenames (removes hostname traces)
 - Replaces all IPv4 addresses (bare and CIDR) in one pass per file
+- Replaces all hostname strings found in content
 - Produces: <newname>_obfuscated.zip, obfuscation_encode.txt, obfuscation_decode.txt
 Usage: python3 obfuscate_logs.py <zipfile>
 """
 
 import re
 import sys
-import os
 import zipfile
-import random
 import hashlib
+import random
 from pathlib import Path
 
 SEED = 42
-IP_RE = re.compile(r'\b(\d{1,3}(?:\.\d{1,3}){3})(\/\d{1,2})?\b')
+IP_RE       = re.compile(r'\b(\d{1,3}(?:\.\d{1,3}){3})(\/\d{1,2})?\b')
+HOSTNAME_RE = re.compile(r'[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?'
+                         r'(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)+')
 
-def fake_ip(real_ip: str, rng: random.Random) -> str:
-    """Generate a deterministic fake IP using a seeded RNG keyed on the real IP."""
-    # Per-IP seed so same IP always gets same fake regardless of discovery order
-    ip_rng = random.Random(int(hashlib.md5(real_ip.encode()).hexdigest(), 16) ^ SEED)
+# ---------------------------------------------------------------------------
+# Deterministic fake generators
+# ---------------------------------------------------------------------------
+
+def fake_ip(real_ip: str) -> str:
+    rng = random.Random(int(hashlib.md5(real_ip.encode()).hexdigest(), 16) ^ SEED)
     return "OBFUSC_{:03d}.{:03d}.{:03d}.{:03d}".format(
-        ip_rng.randint(1, 254), ip_rng.randint(1, 254),
-        ip_rng.randint(1, 254), ip_rng.randint(1, 254)
+        rng.randint(1, 254), rng.randint(1, 254),
+        rng.randint(1, 254), rng.randint(1, 254),
     )
 
-def build_ip_map(zip_path: Path) -> dict:
-    """Single pass through all files to collect unique IPs."""
-    seen = set()
+def fake_hostname(real_host: str) -> str:
+    """Produce a stable OBFUSC-HOST-<hex> replacement for any hostname."""
+    digest = hashlib.md5(real_host.lower().encode()).hexdigest()[:8]
+    return f"OBFUSC-HOST-{digest.upper()}"
+
+def fake_filename(original: str, host_map: dict) -> str:
+    """
+    Strip all known hostnames from an internal zip entry filename,
+    then replace the stem with a hex digest so no original name leaks.
+    """
+    p = Path(original)
+    stem = p.stem
+    suffix = p.suffix
+
+    # Replace any hostname fragments in the filename
+    for real, fake in host_map.items():
+        stem = stem.replace(real, fake)
+
+    # Replace the whole stem with a content-addressed hex so nothing
+    # from the original path survives, while keeping the extension
+    obf_stem = "log_" + hashlib.md5(original.encode()).hexdigest()[:12]
+    return obf_stem + suffix
+
+# ---------------------------------------------------------------------------
+# Scanning pass — collect IPs and hostnames
+# ---------------------------------------------------------------------------
+
+def scan(zip_path: Path):
+    """
+    Single pass: collect all unique IPs and candidate hostnames.
+    Returns (ip_set, hostname_set).
+    Hostnames are only collected if they appear in the zip filename
+    or internal filenames — we don't want to blanket-replace every
+    hostname-shaped string in log content, only real server names.
+    """
+    ip_seen   = set()
+    host_seen = set()
+
+    # Derive hostnames from the zip filename itself
+    stem = zip_path.stem  # e.g. test_logs_server-prod-uk-01
+    # Strip common prefixes like test_logs_, logs_
+    for prefix in ("test_logs_", "logs_"):
+        if stem.startswith(prefix):
+            stem = stem[len(prefix):]
+    if stem:
+        host_seen.add(stem)
+
     with zipfile.ZipFile(zip_path) as zf:
         for name in zf.namelist():
             info = zf.getinfo(name)
+
+            # Collect hostnames from internal filenames
+            inner_stem = Path(name).stem
+            for prefix in ("test_logs_", "logs_"):
+                if inner_stem.startswith(prefix):
+                    inner_stem = inner_stem[len(prefix):]
+            if inner_stem:
+                host_seen.add(inner_stem)
+
             if info.is_dir():
                 continue
             try:
@@ -40,17 +98,28 @@ def build_ip_map(zip_path: Path) -> dict:
             except Exception:
                 continue
             for m in IP_RE.finditer(data):
-                seen.add(m.group(1))
-    rng = random.Random(SEED)
-    return {ip: fake_ip(ip, rng) for ip in sorted(seen)}
+                ip_seen.add(m.group(1))
 
-def obfuscate_content(data: str, ip_map: dict, pattern: re.Pattern) -> str:
-    """Single-pass replacement using regex sub with a lookup callback."""
-    def replace(m):
-        real_ip = m.group(1)
-        cidr = m.group(2) or ""
-        return ip_map.get(real_ip, real_ip) + cidr
-    return pattern.sub(replace, data)
+    return ip_seen, host_seen
+
+# ---------------------------------------------------------------------------
+# Content obfuscation — single regex pass
+# ---------------------------------------------------------------------------
+
+def obfuscate_content(data: str, ip_map: dict, host_map: dict) -> str:
+    # Replace hostnames first (longer strings, more specific)
+    for real, fake in host_map.items():
+        data = data.replace(real, fake)
+
+    # Replace IPs in one regex pass
+    def replace_ip(m):
+        return ip_map.get(m.group(1), m.group(1)) + (m.group(2) or "")
+
+    return IP_RE.sub(replace_ip, data)
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main():
     if len(sys.argv) != 2:
@@ -62,39 +131,56 @@ def main():
         print(f"Error: {src} not found")
         sys.exit(1)
 
-    out_dir = src.parent
+    out_dir  = src.parent
     rand_hex = hashlib.md5(src.name.encode()).hexdigest()[:16]
-    new_stem = f"logs_{rand_hex}"
-    obf_zip  = out_dir / f"{new_stem}_obfuscated.zip"
+    obf_zip  = out_dir / f"logs_{rand_hex}_obfuscated.zip"
     enc_file = out_dir / "obfuscation_encode.txt"
     dec_file = out_dir / "obfuscation_decode.txt"
 
-    print(f"[1/4] Scanning for IPs in {src.name}...")
-    ip_map = build_ip_map(src)
-    print(f"      Found {len(ip_map)} unique IPs")
+    # ------------------------------------------------------------------
+    print(f"[1/4] Scanning {src.name} for IPs and hostnames...")
+    ip_seen, host_seen = scan(src)
+    ip_map   = {ip:   fake_ip(ip)             for ip   in sorted(ip_seen)}
+    host_map = {host: fake_hostname(host)      for host in sorted(host_seen)}
+    print(f"      Found {len(ip_map)} unique IPs, {len(host_map)} hostnames")
+    if host_map:
+        for r, f in host_map.items():
+            print(f"      hostname: {r!r} -> {f!r}")
 
+    # ------------------------------------------------------------------
     print(f"[2/4] Writing mapping files...")
     with open(enc_file, "w") as fe, open(dec_file, "w") as fd:
+        fe.write("# === HOSTNAMES ===\n")
+        fd.write("# === HOSTNAMES ===\n")
+        for real, fake in sorted(host_map.items()):
+            fe.write(f"{real} -> {fake}\n")
+            fd.write(f"{fake} -> {real}\n")
+        fe.write("# === IP ADDRESSES ===\n")
+        fd.write("# === IP ADDRESSES ===\n")
         for real, fake in sorted(ip_map.items()):
             fe.write(f"{real} -> {fake}\n")
             fd.write(f"{fake} -> {real}\n")
 
+    # ------------------------------------------------------------------
     print(f"[3/4] Obfuscating and writing {obf_zip.name}...")
     with zipfile.ZipFile(src) as zin, \
          zipfile.ZipFile(obf_zip, "w", zipfile.ZIP_DEFLATED) as zout:
         for item in zin.infolist():
+            obf_name = fake_filename(item.filename, host_map)
+
             if item.is_dir():
-                zout.mkdir(item)
+                zout.mkdir(obf_name)
                 continue
+
             raw = zin.read(item.filename)
             try:
                 text = raw.decode("utf-8", errors="replace")
-                obf  = obfuscate_content(text, ip_map, IP_RE)
-                zout.writestr(item, obf.encode("utf-8"))
+                obf  = obfuscate_content(text, ip_map, host_map)
+                zout.writestr(obf_name, obf.encode("utf-8"))
             except Exception:
-                # Binary file — copy as-is
-                zout.writestr(item, raw)
+                zout.writestr(obf_name, raw)
 
+    # ------------------------------------------------------------------
     print(f"[4/4] Done.")
     print(f"      Obfuscated zip : {obf_zip.name}")
     print(f"      Encode map     : {enc_file.name}")
