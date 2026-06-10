@@ -57,6 +57,10 @@ head obfuscation_decode.txt
 ```
 
 ```bash
+mickm@ubuntu24-2:~/obfuscation$ unzip logs_ca2052293615066b_obfuscated.zip
+Archive:  logs_ca2052293615066b_obfuscated.zip
+  inflating: log_63762c42cd07.log
+mickm@ubuntu24-2:~/obfuscation$ 
 mickm@ubuntu24-2:~/obfuscation$ ls -ltr
 total 1312
 -rw-r--r-- 1 mickm mickm   3662 Jun 10 10:19 v1_obfuscate_logs.py
@@ -103,5 +107,22 @@ OBFUSC_029.127.166.194 -> 1.182.232.252
 OBFUSC_014.183.226.148 -> 1.184.198.34
 OBFUSC_002.232.023.235 -> 1.201.60.254
 OBFUSC_029.251.019.207 -> 1.211.237.50
+mickm@ubuntu24-2:~/obfuscation$
+```
+## 4 after the obfuscation we can still see hostnames e.g. web-prod-uk-01 - so the script `obfuscate_logs.py` - might need further modifications after we get a real set of logs to test against
+
+
+```
+mickm@ubuntu24-2:~/obfuscation$ head log_63762c42cd07.log
+OBFUSC_110.188.153.124 - nagios [Jun 01 10:00:48] "GET /api/v1/health HTTP/1.1" 200 512 "-" "curl/7.81.0"
+Jun 01 15:21:42 web-prod-uk-01 sshd[7140]: [DEBUG] Disconnected from OBFUSC_203.146.162.105 port 30463
+Jun 01 05:48:46 lb-prod-uk-01 postfix[19210]: [DEBUG] Connection from OBFUSC_040.071.161.138 port 23565 on OBFUSC_135.090.222.062 port 22
+OBFUSC_198.033.228.039 - - [Jun 01 04:32:41] "GET / HTTP/1.1" 301 185 "-" "python-requests/2.28.0"
+2026-06-01T13:10:00.591Z FIREWALL: ACCEPTED IN=eth0 OUT= SRC=OBFUSC_011.182.194.223 DST=OBFUSC_215.076.145.189 PROTO=UDP SPT=14754 DPT=53
+Jun 01 23:35:39 web-prod-uk-02 sudo[42613]: [WARN] Connection from OBFUSC_101.056.162.250 port 61670 on OBFUSC_206.039.196.055 port 22
+OBFUSC_006.248.113.003 - nagios [Jun 01 08:20:21] "GET /api/v1/health HTTP/1.1" 200 512 "-" "curl/7.81.0"
+2026-06-01T11:27:25.217Z FIREWALL: BLACKLIST match SRC=OBFUSC_030.154.244.105 DST=OBFUSC_222.106.111.008 DPT=5432
+Jun 01 01:42:55 web-prod-uk-02 kernel[42120]: [NOTICE] Connection from OBFUSC_183.132.088.195 port 31698 on OBFUSC_010.094.119.232 port 22
+2026-06-01T00:25:04.696Z FIREWALL: DROPPED IN=eth0 OUT= SRC=OBFUSC_020.176.098.187 DST=OBFUSC_076.182.206.154 PROTO=TCP SPT=50959 DPT=80 FLAGS=SYN
 mickm@ubuntu24-2:~/obfuscation$
 ```
