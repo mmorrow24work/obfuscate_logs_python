@@ -109,8 +109,10 @@ OBFUSC_002.232.023.235 -> 1.201.60.254
 OBFUSC_029.251.019.207 -> 1.211.237.50
 mickm@ubuntu24-2:~/obfuscation$
 ```
-## 4 after the obfuscation we can still see hostnames e.g. web-prod-uk-01 - so the script `obfuscate_logs.py` - might need further modifications after we get a real set of logs to test against
+## 4. remaining tasks
 
+- After the obfuscation we can still see hostnames e.g. web-prod-uk-01 - so the script `obfuscate_logs.py` - might need further modifications.
+- Re-test after we get a real set of logs to test against.
 
 ```
 mickm@ubuntu24-2:~/obfuscation$ head log_63762c42cd07.log
